@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +95,17 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 }
 
 func tokenSourceForAccount(ctx context.Context, service googleauth.Service, email string) (oauth2.TokenSource, error) {
+	// If GOG_ACCESS_TOKEN is set, use it directly as a static token source.
+	// This bypasses the normal OAuth2 refresh flow, useful when an external
+	// auth provider (e.g. Composio) manages token lifecycle.
+	if accessToken := os.Getenv("GOG_ACCESS_TOKEN"); accessToken != "" {
+		slog.Debug("using static access token from GOG_ACCESS_TOKEN env var", "email", email)
+		return oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: accessToken,
+			TokenType:   "Bearer",
+		}), nil
+	}
+
 	client, err := authclient.ResolveClient(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("resolve client: %w", err)
@@ -162,6 +174,22 @@ func optionsForAccount(ctx context.Context, service googleauth.Service, email st
 
 func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
 	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
+
+	// If GOG_ACCESS_TOKEN is set, build client options with static token source.
+	if accessToken := os.Getenv("GOG_ACCESS_TOKEN"); accessToken != "" {
+		slog.Debug("using static access token from GOG_ACCESS_TOKEN env var", "serviceLabel", serviceLabel, "email", email)
+		ts := oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: accessToken,
+			TokenType:   "Bearer",
+		})
+		baseTransport := newBaseTransport()
+		retryTransport := NewRetryTransport(&oauth2.Transport{
+			Source: ts,
+			Base:   baseTransport,
+		})
+		c := &http.Client{Transport: retryTransport}
+		return []option.ClientOption{option.WithHTTPClient(c)}, nil
+	}
 
 	var creds config.ClientCredentials
 
