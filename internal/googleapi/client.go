@@ -100,6 +100,7 @@ func tokenSourceForAccount(ctx context.Context, service googleauth.Service, emai
 	// auth provider (e.g. Composio) manages token lifecycle.
 	if accessToken := os.Getenv("GOG_ACCESS_TOKEN"); accessToken != "" {
 		slog.Debug("using static access token from GOG_ACCESS_TOKEN env var", "email", email)
+
 		return oauth2.StaticTokenSource(&oauth2.Token{
 			AccessToken: accessToken,
 			TokenType:   "Bearer",
@@ -175,6 +176,17 @@ func optionsForAccount(ctx context.Context, service googleauth.Service, email st
 func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
 	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
 
+	if composioProxyEnabled() {
+		c, err := newComposioProxyHTTPClient(email)
+		if err != nil {
+			return nil, fmt.Errorf("composio proxy client: %w", err)
+		}
+
+		slog.Debug("using Composio proxy execute for Google API client", "serviceLabel", serviceLabel, "email", email)
+
+		return []option.ClientOption{option.WithHTTPClient(c)}, nil
+	}
+
 	// If GOG_ACCESS_TOKEN is set, build client options with static token source.
 	if accessToken := os.Getenv("GOG_ACCESS_TOKEN"); accessToken != "" {
 		slog.Debug("using static access token from GOG_ACCESS_TOKEN env var", "serviceLabel", serviceLabel, "email", email)
@@ -188,6 +200,7 @@ func optionsForAccountScopes(ctx context.Context, serviceLabel string, email str
 			Base:   baseTransport,
 		})
 		c := &http.Client{Transport: retryTransport}
+
 		return []option.ClientOption{option.WithHTTPClient(c)}, nil
 	}
 
