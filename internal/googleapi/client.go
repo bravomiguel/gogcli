@@ -177,7 +177,7 @@ func optionsForAccountScopes(ctx context.Context, serviceLabel string, email str
 	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
 
 	if composioProxyEnabled() {
-		c, err := newComposioProxyHTTPClient(email)
+		c, err := newComposioProxyHTTPClient(serviceLabel, email)
 		if err != nil {
 			return nil, fmt.Errorf("composio proxy client: %w", err)
 		}

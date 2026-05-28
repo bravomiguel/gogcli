@@ -23,7 +23,7 @@ func TestComposioProxyTransport_RoundTripProxiesGoogleRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case composioAccountsPath:
-			_, _ = w.Write([]byte(`{"items":[{"id":"ca_1","status":"ACTIVE","toolkit":{"slug":"googlesuper"}}]}`))
+			_, _ = w.Write([]byte(`{"items":[{"id":"ca_1","status":"ACTIVE","toolkit":{"slug":"gmail"}}]}`))
 		case composioProxyPath:
 			raw, _ := io.ReadAll(r.Body)
 			var body map[string]any
@@ -54,10 +54,11 @@ func TestComposioProxyTransport_RoundTripProxiesGoogleRequest(t *testing.T) {
 	composioHTTPClient = srv.Client()
 
 	transport := newComposioProxyTransport(nil, composioProxyConfig{
-		APIKey:   "key",
-		EntityID: "miguel@example.com",
-		Email:    "miguel@example.com",
-		BaseURL:  srv.URL,
+		APIKey:       "key",
+		EntityID:     "miguel@example.com",
+		Email:        "miguel@example.com",
+		ServiceLabel: "gmail",
+		BaseURL:      srv.URL,
 	})
 	req := httptest.NewRequest(http.MethodPost, "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=in%3Ainbox", strings.NewReader(`{"raw":"abc"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -92,7 +93,7 @@ func TestComposioProxyTransport_SelectsMatchingGmailProfile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case composioAccountsPath:
-			_, _ = w.Write([]byte(`{"items":[{"id":"ca_wrong","status":"ACTIVE","toolkit":{"slug":"googlesuper"}},{"id":"ca_right","status":"ACTIVE","toolkit":{"slug":"googlesuper"}}]}`))
+			_, _ = w.Write([]byte(`{"items":[{"id":"ca_wrong","status":"ACTIVE","toolkit":{"slug":"gmail"}},{"id":"ca_right","status":"ACTIVE","toolkit":{"slug":"gmail"}}]}`))
 		case composioProxyPath:
 			raw, _ := io.ReadAll(r.Body)
 			var body map[string]any
@@ -113,10 +114,11 @@ func TestComposioProxyTransport_SelectsMatchingGmailProfile(t *testing.T) {
 	composioHTTPClient = srv.Client()
 
 	transport := newComposioProxyTransport(nil, composioProxyConfig{
-		APIKey:   "key",
-		EntityID: "miguel@example.com",
-		Email:    "miguel@example.com",
-		BaseURL:  srv.URL,
+		APIKey:       "key",
+		EntityID:     "miguel@example.com",
+		Email:        "miguel@example.com",
+		ServiceLabel: "gmail",
+		BaseURL:      srv.URL,
 	})
 	accountID, err := transport.connectedAccount(t.Context())
 	if err != nil {
@@ -138,6 +140,80 @@ func TestOptionsForAccountScopes_ComposioProxyBypassesLocalSecrets(t *testing.T)
 	}
 	if len(opts) == 0 {
 		t.Fatalf("expected client option")
+	}
+}
+
+func TestComposioProxyTransport_SelectsAccountByServiceAuthConfig(t *testing.T) {
+	origClient := composioHTTPClient
+	origCache := composioAccountCache
+	t.Cleanup(func() {
+		composioHTTPClient = origClient
+		composioAccountCache = origCache
+	})
+	composioAccountCache = map[string]string{}
+	t.Setenv("GOG_COMPOSIO_CALENDAR_AUTH_CONFIG_ID", "ac_calendar")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case composioAccountsPath:
+			_, _ = w.Write([]byte(`{"items":[{"id":"ca_gmail","status":"ACTIVE","toolkit":{"slug":"googlesuper"},"auth_config":{"id":"ac_gmail"}},{"id":"ca_calendar","status":"ACTIVE","toolkit":{"slug":"googlesuper"},"auth_config":{"id":"ac_calendar"}}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:       "key",
+		EntityID:     "miguel@example.com",
+		Email:        "miguel@example.com",
+		ServiceLabel: "calendar",
+		BaseURL:      srv.URL,
+	})
+	accountID, err := transport.connectedAccount(t.Context())
+	if err != nil {
+		t.Fatalf("connectedAccount: %v", err)
+	}
+	if accountID != "ca_calendar" {
+		t.Fatalf("accountID = %q", accountID)
+	}
+}
+
+func TestComposioProxyTransport_MissingServiceAccountErrorsClearly(t *testing.T) {
+	origClient := composioHTTPClient
+	origCache := composioAccountCache
+	t.Cleanup(func() {
+		composioHTTPClient = origClient
+		composioAccountCache = origCache
+	})
+	composioAccountCache = map[string]string{}
+	t.Setenv("GOG_COMPOSIO_GMAIL_AUTH_CONFIG_ID", "ac_gmail")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case composioAccountsPath:
+			_, _ = w.Write([]byte(`{"items":[{"id":"ca_calendar","status":"ACTIVE","toolkit":{"slug":"googlesuper"},"auth_config":{"id":"ac_calendar"}}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:       "key",
+		EntityID:     "miguel@example.com",
+		Email:        "miguel@example.com",
+		ServiceLabel: "gmail",
+		BaseURL:      srv.URL,
+	})
+	_, err := transport.connectedAccount(t.Context())
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if err.Error() != "Gmail is not connected. Connect Gmail in Mally Settings > Connectors." {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

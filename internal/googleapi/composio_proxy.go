@@ -36,6 +36,7 @@ type composioProxyConfig struct {
 	APIKey             string
 	EntityID           string
 	Email              string
+	ServiceLabel       string
 	ConnectedAccountID string
 	BaseURL            string
 }
@@ -89,9 +90,25 @@ type composioAccountsResponse struct {
 }
 
 type composioAccount struct {
-	ID      string          `json:"id"`
-	Status  string          `json:"status"`
-	Toolkit json.RawMessage `json:"toolkit"`
+	ID         string          `json:"id"`
+	Status     string          `json:"status"`
+	Toolkit    json.RawMessage `json:"toolkit"`
+	AuthConfig json.RawMessage `json:"auth_config"`
+	Raw        map[string]any  `json:"-"`
+}
+
+func (a *composioAccount) UnmarshalJSON(data []byte) error {
+	type alias composioAccount
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err == nil {
+		decoded.Raw = raw
+	}
+	*a = composioAccount(decoded)
+	return nil
 }
 
 func composioProxyEnabled() bool {
@@ -99,7 +116,7 @@ func composioProxyEnabled() bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
-func newComposioProxyConfig(email string) (composioProxyConfig, error) {
+func newComposioProxyConfig(serviceLabel string, email string) (composioProxyConfig, error) {
 	apiKey := strings.TrimSpace(os.Getenv("COMPOSIO_API_KEY"))
 	if apiKey == "" {
 		return composioProxyConfig{}, errors.New("COMPOSIO_API_KEY is required when GOG_COMPOSIO_PROXY is enabled")
@@ -116,10 +133,13 @@ func newComposioProxyConfig(email string) (composioProxyConfig, error) {
 	)
 
 	return composioProxyConfig{
-		APIKey:   apiKey,
-		EntityID: strings.TrimSpace(entityID),
-		Email:    strings.TrimSpace(email),
+		APIKey:       apiKey,
+		EntityID:     strings.TrimSpace(entityID),
+		Email:        strings.TrimSpace(email),
+		ServiceLabel: canonicalComposioServiceLabel(serviceLabel),
 		ConnectedAccountID: strings.TrimSpace(firstNonEmpty(
+			serviceEnv("GOG_COMPOSIO_%s_CONNECTED_ACCOUNT_ID", serviceLabel),
+			serviceEnv("COMPOSIO_%s_CONNECTED_ACCOUNT_ID", serviceLabel),
 			os.Getenv("GOG_COMPOSIO_CONNECTED_ACCOUNT_ID"),
 			os.Getenv("COMPOSIO_CONNECTED_ACCOUNT_ID"),
 		)),
@@ -127,8 +147,8 @@ func newComposioProxyConfig(email string) (composioProxyConfig, error) {
 	}, nil
 }
 
-func newComposioProxyHTTPClient(email string) (*http.Client, error) {
-	cfg, err := newComposioProxyConfig(email)
+func newComposioProxyHTTPClient(serviceLabel string, email string) (*http.Client, error) {
+	cfg, err := newComposioProxyConfig(serviceLabel, email)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +240,7 @@ func (t *composioProxyTransport) resolveConnectedAccount(ctx context.Context) (s
 		return t.cfg.ConnectedAccountID, nil
 	}
 
-	cacheKey := strings.Join([]string{t.cfg.BaseURL, t.cfg.APIKey, t.cfg.EntityID, t.cfg.Email}, "\x00")
+	cacheKey := strings.Join([]string{t.cfg.BaseURL, t.cfg.APIKey, t.cfg.EntityID, t.cfg.Email, t.cfg.ServiceLabel}, "\x00")
 	composioAccountCacheMu.Lock()
 	if accountID := composioAccountCache[cacheKey]; accountID != "" {
 		composioAccountCacheMu.Unlock()
@@ -233,15 +253,20 @@ func (t *composioProxyTransport) resolveConnectedAccount(ctx context.Context) (s
 		return "", err
 	}
 	if len(accounts) == 0 {
-		return "", fmt.Errorf("no active Google Composio connected accounts found for entity %q", t.cfg.EntityID)
+		return "", newComposioConnectorNotConnectedError(t.cfg.ServiceLabel)
 	}
 
-	accountID := accounts[0].ID
-	if desiredEmail := t.desiredEmail(); desiredEmail != "" {
-		if matched, ok := t.findAccountForEmail(ctx, accounts, desiredEmail); ok {
+	serviceAccounts := t.filterAccountsForService(accounts)
+	if len(serviceAccounts) == 0 {
+		return "", newComposioConnectorNotConnectedError(t.cfg.ServiceLabel)
+	}
+
+	accountID := serviceAccounts[0].ID
+	if desiredEmail := t.desiredEmail(); desiredEmail != "" && len(serviceAccounts) > 1 {
+		if matched, ok := t.findAccountForEmail(ctx, serviceAccounts, desiredEmail); ok {
 			accountID = matched
 		} else {
-			slog.Warn("no Composio Google account matched requested email; using first active account", "email", desiredEmail, "account", accountID)
+			slog.Warn("no Composio Google account matched requested email; using first active service account", "service", t.cfg.ServiceLabel, "email", desiredEmail, "account", accountID)
 		}
 	}
 
@@ -521,6 +546,28 @@ func filterGoogleAccounts(accounts []composioAccount) []composioAccount {
 	return filtered
 }
 
+func (t *composioProxyTransport) filterAccountsForService(accounts []composioAccount) []composioAccount {
+	service := canonicalComposioServiceLabel(t.cfg.ServiceLabel)
+	authConfigIDs := serviceAuthConfigIDs(service)
+	if len(authConfigIDs) > 0 {
+		filtered := make([]composioAccount, 0, len(accounts))
+		for _, account := range accounts {
+			if authConfigIDs[account.AuthConfigID()] {
+				filtered = append(filtered, account)
+			}
+		}
+		return filtered
+	}
+
+	filtered := make([]composioAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account.ToolkitMatchesService(service) {
+			filtered = append(filtered, account)
+		}
+	}
+	return filtered
+}
+
 func (a composioAccount) ToolkitSlug() string {
 	var toolkitString string
 	if err := json.Unmarshal(a.Toolkit, &toolkitString); err == nil {
@@ -539,12 +586,160 @@ func (a composioAccount) ToolkitSlug() string {
 	return ""
 }
 
+func (a composioAccount) AuthConfigID() string {
+	for _, key := range []string{"auth_config_id", "authConfigId", "auth_configId"} {
+		if value, ok := rawString(a.Raw, key); ok {
+			return value
+		}
+	}
+
+	var authConfigString string
+	if err := json.Unmarshal(a.AuthConfig, &authConfigString); err == nil {
+		return strings.TrimSpace(authConfigString)
+	}
+	var authConfigObject map[string]any
+	if err := json.Unmarshal(a.AuthConfig, &authConfigObject); err == nil {
+		for _, key := range []string{"id", "auth_config_id", "authConfigId"} {
+			if value, ok := rawString(authConfigObject, key); ok {
+				return value
+			}
+		}
+	}
+	for _, key := range []string{"authConfig", "auth_config"} {
+		if nested, ok := a.Raw[key].(map[string]any); ok {
+			for _, nestedKey := range []string{"id", "auth_config_id", "authConfigId"} {
+				if value, ok := rawString(nested, nestedKey); ok {
+					return value
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func rawString(values map[string]any, key string) (string, bool) {
+	if values == nil {
+		return "", false
+	}
+	value, ok := values[key]
+	if !ok {
+		return "", false
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	return text, text != ""
+}
+
 func isGoogleToolkitSlug(slug string) bool {
 	switch strings.ToLower(slug) {
 	case "google", "gmail", "googlegmail", "googlesuper", "googlecalendar", "googledrive", "googlesheets", "googledocs":
 		return true
 	default:
 		return false
+	}
+}
+
+func (a composioAccount) ToolkitMatchesService(service string) bool {
+	slug := strings.ToLower(a.ToolkitSlug())
+	switch canonicalComposioServiceLabel(service) {
+	case "gmail":
+		return slug == "gmail" || slug == "googlegmail"
+	case "calendar":
+		return slug == "googlecalendar"
+	case "drive":
+		return slug == "googledrive"
+	case "docs":
+		return slug == "googledocs"
+	case "sheets":
+		return slug == "googlesheets"
+	default:
+		return slug == strings.ToLower(service)
+	}
+}
+
+func canonicalComposioServiceLabel(service string) string {
+	service = strings.ToLower(strings.TrimSpace(service))
+	switch service {
+	case "google-calendar", "cal":
+		return "calendar"
+	case "google-drive", "gdrive", "drv":
+		return "drive"
+	case "google-docs", "doc":
+		return "docs"
+	case "google-sheets", "sheet":
+		return "sheets"
+	case "mail", "email", "google-gmail":
+		return "gmail"
+	default:
+		return service
+	}
+}
+
+func serviceAuthConfigIDs(service string) map[string]bool {
+	service = canonicalComposioServiceLabel(service)
+	candidates := []string{
+		serviceEnv("GOG_COMPOSIO_%s_AUTH_CONFIG_ID", service),
+		serviceEnv("COMPOSIO_%s_AUTH_CONFIG_ID", service),
+	}
+	ids := map[string]bool{}
+	for _, candidate := range candidates {
+		for _, part := range strings.Split(candidate, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				ids[part] = true
+			}
+		}
+	}
+	return ids
+}
+
+func serviceEnv(format string, service string) string {
+	service = canonicalComposioServiceLabel(service)
+	if service == "" {
+		return ""
+	}
+	return os.Getenv(fmt.Sprintf(format, envServiceName(service)))
+}
+
+func envServiceName(service string) string {
+	service = strings.ToUpper(strings.TrimSpace(service))
+	replacer := strings.NewReplacer("-", "_", ".", "_", " ", "_")
+	return replacer.Replace(service)
+}
+
+type composioConnectorNotConnectedError struct {
+	Service string
+}
+
+func (e *composioConnectorNotConnectedError) Error() string {
+	label := composioServiceDisplayName(e.Service)
+	if label == "" {
+		label = "Google app"
+	}
+	return fmt.Sprintf("%s is not connected. Connect %s in Mally Settings > Connectors.", label, label)
+}
+
+func newComposioConnectorNotConnectedError(service string) error {
+	return &composioConnectorNotConnectedError{Service: canonicalComposioServiceLabel(service)}
+}
+
+func composioServiceDisplayName(service string) string {
+	switch canonicalComposioServiceLabel(service) {
+	case "gmail":
+		return "Gmail"
+	case "calendar":
+		return "Google Calendar"
+	case "drive":
+		return "Google Drive"
+	case "docs":
+		return "Google Docs"
+	case "sheets":
+		return "Google Sheets"
+	default:
+		return strings.TrimSpace(service)
 	}
 }
 
