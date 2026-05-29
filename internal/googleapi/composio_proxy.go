@@ -397,10 +397,7 @@ func (t *composioProxyTransport) gmailProfileEmail(ctx context.Context, accountI
 }
 
 func (t *composioProxyTransport) buildProxyRequest(req *http.Request, accountID string) (composioProxyRequest, error) {
-	endpoint := req.URL.EscapedPath()
-	if endpoint == "" {
-		endpoint = "/"
-	}
+	endpoint := composioProxyEndpoint(req)
 
 	parameters := make([]composioParameter, 0, len(req.URL.Query())+len(req.Header))
 	for name, values := range req.URL.Query() {
@@ -454,6 +451,24 @@ func (t *composioProxyTransport) buildProxyRequest(req *http.Request, accountID 
 		ContentType: contentType,
 	}
 	return proxyReq, nil
+}
+
+func composioProxyEndpoint(req *http.Request) string {
+	endpoint := req.URL.EscapedPath()
+	if endpoint == "" {
+		return "/"
+	}
+
+	// Google media uploads are sent to /upload/<api>/<version>/..., but
+	// Composio's proxy executes against the underlying Google API endpoint.
+	if isGoogleAPIRequest(req) && strings.HasPrefix(endpoint, "/upload/") {
+		endpoint = strings.TrimPrefix(endpoint, "/upload")
+		if endpoint == "" {
+			return "/"
+		}
+	}
+
+	return endpoint
 }
 
 func (t *composioProxyTransport) responseBody(ctx context.Context, decoded composioProxyResponse) ([]byte, string, error) {

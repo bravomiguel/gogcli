@@ -2,6 +2,7 @@
 package googleapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -78,6 +79,54 @@ func TestComposioProxyTransport_RoundTripProxiesGoogleRequest(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	if strings.TrimSpace(string(raw)) != `{"id":"msg_1"}` {
 		t.Fatalf("body = %s", raw)
+	}
+}
+
+func TestComposioProxyTransport_NormalizesGoogleUploadEndpoint(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true",
+		strings.NewReader("multipart body"),
+	)
+	req.Header.Set("Content-Type", "multipart/related; boundary=abc123")
+
+	proxyReq, err := transport.buildProxyRequest(req, "ca_drive")
+	if err != nil {
+		t.Fatalf("buildProxyRequest: %v", err)
+	}
+
+	if proxyReq.Endpoint != "/drive/v3/files" {
+		t.Fatalf("endpoint = %q", proxyReq.Endpoint)
+	}
+	if proxyReq.Method != http.MethodPost {
+		t.Fatalf("method = %q", proxyReq.Method)
+	}
+	if proxyReq.ConnectedAccountID != "ca_drive" {
+		t.Fatalf("connected account = %q", proxyReq.ConnectedAccountID)
+	}
+	if proxyReq.BinaryBody == nil {
+		t.Fatalf("expected binary body")
+	}
+	if proxyReq.BinaryBody.ContentType != "multipart/related; boundary=abc123" {
+		t.Fatalf("content type = %q", proxyReq.BinaryBody.ContentType)
+	}
+	raw, err := base64.StdEncoding.DecodeString(proxyReq.BinaryBody.Base64)
+	if err != nil {
+		t.Fatalf("decode binary body: %v", err)
+	}
+	if string(raw) != "multipart body" {
+		t.Fatalf("binary body = %q", raw)
+	}
+	params := paramsToAny(proxyReq.Parameters)
+	if !hasParam(params, "uploadType", "multipart", "query") {
+		t.Fatalf("missing uploadType query param: %#v", proxyReq.Parameters)
+	}
+	if !hasParam(params, "supportsAllDrives", "true", "query") {
+		t.Fatalf("missing supportsAllDrives query param: %#v", proxyReq.Parameters)
+	}
+	if !hasParam(params, "Content-Type", "multipart/related; boundary=abc123", "header") {
+		t.Fatalf("missing content type header: %#v", proxyReq.Parameters)
 	}
 }
 
@@ -228,4 +277,16 @@ func hasParam(params []any, name string, value string, typ string) bool {
 		}
 	}
 	return false
+}
+
+func paramsToAny(params []composioParameter) []any {
+	out := make([]any, 0, len(params))
+	for _, param := range params {
+		out = append(out, map[string]any{
+			"name":  param.Name,
+			"value": param.Value,
+			"type":  param.Type,
+		})
+	}
+	return out
 }
