@@ -116,6 +116,10 @@ func composioProxyEnabled() bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
+func ComposioProxyEnabled() bool {
+	return composioProxyEnabled()
+}
+
 func newComposioProxyConfig(serviceLabel string, email string) (composioProxyConfig, error) {
 	apiKey := strings.TrimSpace(os.Getenv("COMPOSIO_API_KEY"))
 	if apiKey == "" {
@@ -153,6 +157,10 @@ func newComposioProxyHTTPClient(serviceLabel string, email string) (*http.Client
 		return nil, err
 	}
 	return &http.Client{Transport: NewRetryTransport(newComposioProxyTransport(newBaseTransport(), cfg))}, nil
+}
+
+func NewComposioProxyHTTPClient(serviceLabel string, email string) (*http.Client, error) {
+	return newComposioProxyHTTPClient(serviceLabel, email)
 }
 
 func newComposioProxyTransport(base http.RoundTripper, cfg composioProxyConfig) *composioProxyTransport {
@@ -397,7 +405,7 @@ func (t *composioProxyTransport) gmailProfileEmail(ctx context.Context, accountI
 }
 
 func (t *composioProxyTransport) buildProxyRequest(req *http.Request, accountID string) (composioProxyRequest, error) {
-	endpoint := composioProxyEndpoint(req)
+	endpoint := t.composioProxyEndpoint(req)
 
 	parameters := make([]composioParameter, 0, len(req.URL.Query())+len(req.Header))
 	for name, values := range req.URL.Query() {
@@ -453,21 +461,26 @@ func (t *composioProxyTransport) buildProxyRequest(req *http.Request, accountID 
 	return proxyReq, nil
 }
 
-func composioProxyEndpoint(req *http.Request) string {
+func (t *composioProxyTransport) composioProxyEndpoint(req *http.Request) string {
 	endpoint := req.URL.EscapedPath()
 	if endpoint == "" {
 		return "/"
 	}
-
-	// Google media uploads are sent to /upload/<api>/<version>/..., but
-	// Composio's proxy executes against the underlying Google API endpoint.
-	if isGoogleAPIRequest(req) && strings.HasPrefix(endpoint, "/upload/") {
-		endpoint = strings.TrimPrefix(endpoint, "/upload")
-		if endpoint == "" {
-			return "/"
-		}
+	if t.cfg.ServiceLabel != "drive" {
+		return endpoint
 	}
-
+	if isGoogleAPIRequest(req) && strings.HasPrefix(endpoint, "/upload/") {
+		uploadURL := *req.URL
+		uploadURL.RawQuery = ""
+		uploadURL.Fragment = ""
+		return uploadURL.String()
+	}
+	if strings.HasPrefix(endpoint, "/drive/v3/") {
+		return strings.TrimPrefix(endpoint, "/drive/v3")
+	}
+	if endpoint == "/drive/v3" {
+		return "/"
+	}
 	return endpoint
 }
 

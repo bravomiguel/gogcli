@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -58,6 +60,8 @@ const (
 
 	drivePermRoleReader = "reader"
 	drivePermRoleWriter = "writer"
+
+	composioProxyBinaryBodyMaxBytes = 4 * 1024 * 1024
 )
 
 type DriveCmd struct {
@@ -435,6 +439,24 @@ func (c *DriveUploadCmd) Run(ctx context.Context, flags *RootFlags) error {
 			}
 		}
 
+		if googleapi.ComposioProxyEnabled() {
+			created, createErr := driveUploadCreateViaComposioProxy(ctx, account, svc, f, mimeType, meta, c.KeepRevisionForever)
+			if createErr != nil {
+				return createErr
+			}
+
+			if outfmt.IsJSON(ctx) {
+				return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{strFile: created})
+			}
+
+			u.Out().Printf("id\t%s", created.Id)
+			u.Out().Printf("name\t%s", created.Name)
+			if created.WebViewLink != "" {
+				u.Out().Printf("link\t%s", created.WebViewLink)
+			}
+			return nil
+		}
+
 		createCall := svc.Files.Create(meta).
 			SupportsAllDrives(true).
 			Media(f, gapi.ContentType(mimeType)).
@@ -480,6 +502,29 @@ func (c *DriveUploadCmd) Run(ctx context.Context, flags *RootFlags) error {
 		meta.Name = fileName
 	}
 
+	if googleapi.ComposioProxyEnabled() {
+		updated, updateErr := driveUploadReplaceViaComposioProxy(ctx, account, svc, f, mimeType, replaceFileID, meta, c.KeepRevisionForever)
+		if updateErr != nil {
+			return updateErr
+		}
+
+		if outfmt.IsJSON(ctx) {
+			return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{
+				strFile:           updated,
+				"replaced":        true,
+				"preservedFileId": updated.Id == replaceFileID,
+			})
+		}
+
+		u.Out().Printf("id\t%s", updated.Id)
+		u.Out().Printf("name\t%s", updated.Name)
+		u.Out().Printf("replaced\t%t", true)
+		if updated.WebViewLink != "" {
+			u.Out().Printf("link\t%s", updated.WebViewLink)
+		}
+		return nil
+	}
+
 	call := svc.Files.Update(replaceFileID, meta).
 		SupportsAllDrives(true).
 		Media(f, gapi.ContentType(mimeType)).
@@ -508,6 +553,101 @@ func (c *DriveUploadCmd) Run(ctx context.Context, flags *RootFlags) error {
 		u.Out().Printf("link\t%s", updated.WebViewLink)
 	}
 	return nil
+}
+
+func driveUploadCreateViaComposioProxy(ctx context.Context, account string, svc *drive.Service, f *os.File, mimeType string, meta *drive.File, keepRevisionForever bool) (*drive.File, error) {
+	created, err := driveUploadMediaViaComposioProxy(ctx, account, http.MethodPost, "https://www.googleapis.com/upload/drive/v3/files", f, mimeType, keepRevisionForever)
+	if err != nil {
+		return nil, err
+	}
+
+	patch := &drive.File{Name: meta.Name}
+	update := svc.Files.Update(created.Id, patch).
+		SupportsAllDrives(true).
+		Fields("id, name, mimeType, size, webViewLink").
+		Context(ctx)
+	if len(meta.Parents) > 0 {
+		update = update.AddParents(strings.Join(meta.Parents, ","))
+	}
+	if meta.MimeType != "" {
+		patch.MimeType = meta.MimeType
+	}
+
+	return update.Do()
+}
+
+func driveUploadReplaceViaComposioProxy(ctx context.Context, account string, svc *drive.Service, f *os.File, mimeType string, fileID string, meta *drive.File, keepRevisionForever bool) (*drive.File, error) {
+	endpoint := "https://www.googleapis.com/upload/drive/v3/files/" + url.PathEscape(fileID)
+	updated, err := driveUploadMediaViaComposioProxy(ctx, account, http.MethodPatch, endpoint, f, mimeType, keepRevisionForever)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(meta.Name) == "" {
+		return updated, nil
+	}
+
+	return svc.Files.Update(updated.Id, meta).
+		SupportsAllDrives(true).
+		Fields("id, name, mimeType, size, webViewLink").
+		Context(ctx).
+		Do()
+}
+
+func driveUploadMediaViaComposioProxy(ctx context.Context, account string, method string, endpoint string, f *os.File, mimeType string, keepRevisionForever bool) (*drive.File, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > composioProxyBinaryBodyMaxBytes {
+		return nil, fmt.Errorf("Drive uploads through Composio Proxy Execute are limited to %d bytes; file is %d bytes", composioProxyBinaryBodyMaxBytes, info.Size())
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	client, err := googleapi.NewComposioProxyHTTPClient("drive", account)
+	if err != nil {
+		return nil, err
+	}
+
+	reqURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	q := reqURL.Query()
+	q.Set("uploadType", "media")
+	q.Set("supportsAllDrives", "true")
+	q.Set("fields", "id, name, mimeType, size, webViewLink")
+	if keepRevisionForever {
+		q.Set("keepRevisionForever", "true")
+	}
+	reqURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), f)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", mimeType)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("Google API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var file drive.File
+	if err := json.Unmarshal(body, &file); err != nil {
+		return nil, err
+	}
+	return &file, nil
 }
 
 type DriveMkdirCmd struct {

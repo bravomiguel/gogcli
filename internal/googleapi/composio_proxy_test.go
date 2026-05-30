@@ -82,8 +82,8 @@ func TestComposioProxyTransport_RoundTripProxiesGoogleRequest(t *testing.T) {
 	}
 }
 
-func TestComposioProxyTransport_NormalizesGoogleUploadEndpoint(t *testing.T) {
-	transport := newComposioProxyTransport(nil, composioProxyConfig{})
+func TestComposioProxyTransport_PreservesGoogleUploadEndpoint(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{ServiceLabel: "drive"})
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true",
@@ -96,7 +96,7 @@ func TestComposioProxyTransport_NormalizesGoogleUploadEndpoint(t *testing.T) {
 		t.Fatalf("buildProxyRequest: %v", err)
 	}
 
-	if proxyReq.Endpoint != "/drive/v3/files" {
+	if proxyReq.Endpoint != "https://www.googleapis.com/upload/drive/v3/files" {
 		t.Fatalf("endpoint = %q", proxyReq.Endpoint)
 	}
 	if proxyReq.Method != http.MethodPost {
@@ -127,6 +127,24 @@ func TestComposioProxyTransport_NormalizesGoogleUploadEndpoint(t *testing.T) {
 	}
 	if !hasParam(params, "Content-Type", "multipart/related; boundary=abc123", "header") {
 		t.Fatalf("missing content type header: %#v", proxyReq.Parameters)
+	}
+}
+
+func TestComposioProxyTransport_TrimsDriveBasePath(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{ServiceLabel: "drive"})
+	req := httptest.NewRequest(http.MethodGet, "https://www.googleapis.com/drive/v3/files?pageSize=1", nil)
+
+	proxyReq, err := transport.buildProxyRequest(req, "ca_drive")
+	if err != nil {
+		t.Fatalf("buildProxyRequest: %v", err)
+	}
+
+	if proxyReq.Endpoint != "/files" {
+		t.Fatalf("endpoint = %q", proxyReq.Endpoint)
+	}
+	params := paramsToAny(proxyReq.Parameters)
+	if !hasParam(params, "pageSize", "1", "query") {
+		t.Fatalf("missing pageSize query param: %#v", proxyReq.Parameters)
 	}
 }
 
