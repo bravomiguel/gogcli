@@ -166,6 +166,42 @@ func TestComposioProxyTransport_TrimsCalendarBasePath(t *testing.T) {
 	}
 }
 
+func TestComposioProxyTransport_TrimsDocsBasePath(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{ServiceLabel: "docs"})
+	req := httptest.NewRequest(http.MethodGet, "https://docs.googleapis.com/v1/documents/doc_1?includeTabsContent=true", nil)
+
+	proxyReq, err := transport.buildProxyRequest(req, "ca_docs")
+	if err != nil {
+		t.Fatalf("buildProxyRequest: %v", err)
+	}
+
+	if proxyReq.Endpoint != "/documents/doc_1" {
+		t.Fatalf("endpoint = %q", proxyReq.Endpoint)
+	}
+	params := paramsToAny(proxyReq.Parameters)
+	if !hasParam(params, "includeTabsContent", "true", "query") {
+		t.Fatalf("missing includeTabsContent query param: %#v", proxyReq.Parameters)
+	}
+}
+
+func TestComposioProxyTransport_TrimsSheetsBasePath(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{ServiceLabel: "sheets"})
+	req := httptest.NewRequest(http.MethodGet, "https://sheets.googleapis.com/v4/spreadsheets/sheet_1/values/Sheet1!A1%3AB2?majorDimension=ROWS", nil)
+
+	proxyReq, err := transport.buildProxyRequest(req, "ca_sheets")
+	if err != nil {
+		t.Fatalf("buildProxyRequest: %v", err)
+	}
+
+	if proxyReq.Endpoint != "/spreadsheets/sheet_1/values/Sheet1!A1%3AB2" {
+		t.Fatalf("endpoint = %q", proxyReq.Endpoint)
+	}
+	params := paramsToAny(proxyReq.Parameters)
+	if !hasParam(params, "majorDimension", "ROWS", "query") {
+		t.Fatalf("missing majorDimension query param: %#v", proxyReq.Parameters)
+	}
+}
+
 func TestComposioProxyTransport_SelectsMatchingGmailProfile(t *testing.T) {
 	origClient := composioHTTPClient
 	origCache := composioAccountCache

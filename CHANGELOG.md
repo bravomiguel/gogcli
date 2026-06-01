@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.6-google-proxy - 2026-06-01
+
+### Fixed
+- Composio proxy: trim Google Docs and Google Sheets API version base paths for app-specific connectors.
+
 ## 0.11.5-calendar - 2026-06-01
 
 ### Fixed

@@ -475,6 +475,24 @@ func (t *composioProxyTransport) composioProxyEndpoint(req *http.Request) string
 		}
 		return endpoint
 	}
+	if t.cfg.ServiceLabel == "docs" {
+		if strings.HasPrefix(endpoint, "/v1/") {
+			return strings.TrimPrefix(endpoint, "/v1")
+		}
+		if endpoint == "/v1" {
+			return "/"
+		}
+		return endpoint
+	}
+	if t.cfg.ServiceLabel == "sheets" {
+		if strings.HasPrefix(endpoint, "/v4/") {
+			return strings.TrimPrefix(endpoint, "/v4")
+		}
+		if endpoint == "/v4" {
+			return "/"
+		}
+		return endpoint
+	}
 	if t.cfg.ServiceLabel != "drive" {
 		return endpoint
 	}
