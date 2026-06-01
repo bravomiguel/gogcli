@@ -466,6 +466,15 @@ func (t *composioProxyTransport) composioProxyEndpoint(req *http.Request) string
 	if endpoint == "" {
 		return "/"
 	}
+	if t.cfg.ServiceLabel == "calendar" {
+		if strings.HasPrefix(endpoint, "/calendar/v3/") {
+			return strings.TrimPrefix(endpoint, "/calendar/v3")
+		}
+		if endpoint == "/calendar/v3" {
+			return "/"
+		}
+		return endpoint
+	}
 	if t.cfg.ServiceLabel != "drive" {
 		return endpoint
 	}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.5-calendar - 2026-06-01
+
+### Fixed
+- Composio proxy: trim the Google Calendar API base path before proxy execution so Mally's Google Calendar connector can list, create, and delete events through `gog`.
+
 ## 0.12.0 - Unreleased
 
 ### Added

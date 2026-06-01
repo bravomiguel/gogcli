@@ -148,6 +148,24 @@ func TestComposioProxyTransport_TrimsDriveBasePath(t *testing.T) {
 	}
 }
 
+func TestComposioProxyTransport_TrimsCalendarBasePath(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{ServiceLabel: "calendar"})
+	req := httptest.NewRequest(http.MethodGet, "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1", nil)
+
+	proxyReq, err := transport.buildProxyRequest(req, "ca_calendar")
+	if err != nil {
+		t.Fatalf("buildProxyRequest: %v", err)
+	}
+
+	if proxyReq.Endpoint != "/users/me/calendarList" {
+		t.Fatalf("endpoint = %q", proxyReq.Endpoint)
+	}
+	params := paramsToAny(proxyReq.Parameters)
+	if !hasParam(params, "maxResults", "1", "query") {
+		t.Fatalf("missing maxResults query param: %#v", proxyReq.Parameters)
+	}
+}
+
 func TestComposioProxyTransport_SelectsMatchingGmailProfile(t *testing.T) {
 	origClient := composioHTTPClient
 	origCache := composioAccountCache

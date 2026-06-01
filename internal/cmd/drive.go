@@ -599,10 +599,10 @@ func driveUploadMediaViaComposioProxy(ctx context.Context, account string, metho
 		return nil, err
 	}
 	if info.Size() > composioProxyBinaryBodyMaxBytes {
-		return nil, fmt.Errorf("Drive uploads through Composio Proxy Execute are limited to %d bytes; file is %d bytes", composioProxyBinaryBodyMaxBytes, info.Size())
+		return nil, fmt.Errorf("drive uploads through Composio Proxy Execute are limited to %d bytes; file is %d bytes", composioProxyBinaryBodyMaxBytes, info.Size())
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+	if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+		return nil, seekErr
 	}
 
 	client, err := googleapi.NewComposioProxyHTTPClient("drive", account)
@@ -629,7 +629,7 @@ func driveUploadMediaViaComposioProxy(ctx context.Context, account string, metho
 	}
 	req.Header.Set("Content-Type", mimeType)
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // endpoint is a Google Drive upload URL built by gog.
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +640,7 @@ func driveUploadMediaViaComposioProxy(ctx context.Context, account string, metho
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Google API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("google API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var file drive.File
