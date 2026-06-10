@@ -250,6 +250,122 @@ func TestComposioProxyTransport_SelectsMatchingGmailProfile(t *testing.T) {
 	}
 }
 
+func TestComposioProxyTransport_ErrorsWhenMultipleGmailAccountsAreAmbiguous(t *testing.T) {
+	origClient := composioHTTPClient
+	origCache := composioAccountCache
+	t.Cleanup(func() {
+		composioHTTPClient = origClient
+		composioAccountCache = origCache
+	})
+	composioAccountCache = map[string]string{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case composioAccountsPath:
+			_, _ = w.Write([]byte(`{"items":[{"id":"ca_one","status":"ACTIVE","toolkit":{"slug":"gmail"}},{"id":"ca_two","status":"ACTIVE","toolkit":{"slug":"gmail"}}]}`))
+		case composioProxyPath:
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode proxy request: %v", err)
+			}
+			email := "one@example.com"
+			if body["connected_account_id"] == "ca_two" {
+				email = "two@example.com"
+			}
+			_, _ = w.Write([]byte(`{"status":200,"data":{"emailAddress":"` + email + `"}}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:       "key",
+		EntityID:     "user_123",
+		Email:        "user_123",
+		ServiceLabel: "gmail",
+		BaseURL:      srv.URL,
+	})
+	_, err := transport.connectedAccount(t.Context())
+	if err == nil {
+		t.Fatalf("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "multiple Gmail Composio accounts are connected") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "one@example.com\tca_one") || !strings.Contains(err.Error(), "two@example.com\tca_two") {
+		t.Fatalf("error did not include account choices: %q", err.Error())
+	}
+}
+
+func TestComposioProxyTransport_SelectsContextConnectedAccountID(t *testing.T) {
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:             "key",
+		EntityID:           "user_123",
+		Email:              "user_123",
+		ServiceLabel:       "gmail",
+		ConnectedAccountID: "ca_context",
+		BaseURL:            "https://example.invalid",
+	})
+	accountID, err := transport.connectedAccount(t.Context())
+	if err != nil {
+		t.Fatalf("connectedAccount: %v", err)
+	}
+	if accountID != "ca_context" {
+		t.Fatalf("accountID = %q", accountID)
+	}
+}
+
+func TestListComposioProxyAccountsIncludesGmailProfiles(t *testing.T) {
+	origClient := composioHTTPClient
+	origCache := composioAccountCache
+	t.Cleanup(func() {
+		composioHTTPClient = origClient
+		composioAccountCache = origCache
+	})
+	composioAccountCache = map[string]string{}
+	t.Setenv("COMPOSIO_API_KEY", "key")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case composioAccountsPath:
+			_, _ = w.Write([]byte(`{"items":[{"id":"ca_one","status":"ACTIVE","toolkit":{"slug":"gmail"}},{"id":"ca_two","status":"ACTIVE","toolkit":{"slug":"gmail"}}]}`))
+		case composioProxyPath:
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode proxy request: %v", err)
+			}
+			email := "one@example.com"
+			if body["connected_account_id"] == "ca_two" {
+				email = "two@example.com"
+			}
+			_, _ = w.Write([]byte(`{"status":200,"data":{"emailAddress":"` + email + `"}}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+	t.Setenv("GOG_COMPOSIO_BASE_URL", srv.URL)
+
+	accounts, err := ListComposioProxyAccounts(t.Context(), "gmail", "two@example.com")
+	if err != nil {
+		t.Fatalf("ListComposioProxyAccounts: %v", err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("len(accounts) = %d", len(accounts))
+	}
+	if accounts[0].EmailAddress != "one@example.com" || accounts[1].EmailAddress != "two@example.com" {
+		t.Fatalf("accounts = %#v", accounts)
+	}
+	if !accounts[1].Selected || accounts[1].SelectionMatch != "email" {
+		t.Fatalf("expected second account selected by email: %#v", accounts[1])
+	}
+}
+
 func TestOptionsForAccountScopes_ComposioProxyBypassesLocalSecrets(t *testing.T) {
 	t.Setenv("GOG_COMPOSIO_PROXY", "1")
 	t.Setenv("COMPOSIO_API_KEY", "key")

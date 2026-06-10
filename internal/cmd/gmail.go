@@ -19,6 +19,7 @@ import (
 var newGmailService = googleapi.NewGmail
 
 type GmailCmd struct {
+	Accounts   GmailAccountsCmd   `cmd:"" name:"accounts" aliases:"account" group:"Read" help:"List connected Gmail accounts"`
 	Search     GmailSearchCmd     `cmd:"" name:"search" aliases:"find,query,ls,list" group:"Read" help:"Search threads using Gmail query syntax"`
 	Messages   GmailMessagesCmd   `cmd:"" name:"messages" aliases:"message,msg,msgs" group:"Read" help:"Message operations"`
 	Thread     GmailThreadCmd     `cmd:"" name:"thread" aliases:"threads,read" group:"Organize" help:"Thread operations (get, modify)"`
@@ -48,6 +49,45 @@ type GmailCmd struct {
 	Forwarding  GmailForwardingCmd  `cmd:"" name:"forwarding" hidden:"" help:"Forwarding addresses"`
 	SendAs      GmailSendAsCmd      `cmd:"" name:"sendas" hidden:"" help:"Send-as settings"`
 	Vacation    GmailVacationCmd    `cmd:"" name:"vacation" hidden:"" help:"Vacation responder"`
+}
+
+type GmailAccountsCmd struct {
+	List GmailAccountsListCmd `cmd:"" name:"list" aliases:"ls" help:"List connected Gmail accounts"`
+}
+
+type GmailAccountsListCmd struct{}
+
+func (c *GmailAccountsListCmd) Run(ctx context.Context, flags *RootFlags) error {
+	account := ""
+	if flags != nil {
+		account = strings.TrimSpace(flags.Account)
+	}
+	accounts, err := googleapi.ListComposioProxyAccounts(ctx, "gmail", account)
+	if err != nil {
+		return err
+	}
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"accounts": accounts})
+	}
+
+	w, flush := tableWriter(ctx)
+	defer flush()
+	fmt.Fprintln(w, "EMAIL\tCONNECTED_ACCOUNT_ID\tSTATUS\tSELECTED")
+	for _, account := range accounts {
+		selected := ""
+		if account.Selected {
+			selected = account.SelectionMatch
+			if selected == "" {
+				selected = "yes"
+			}
+		}
+		email := account.EmailAddress
+		if email == "" {
+			email = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", email, account.ID, account.Status, selected)
+	}
+	return nil
 }
 
 type GmailSettingsCmd struct {

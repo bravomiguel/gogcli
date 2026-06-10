@@ -41,6 +41,28 @@ type composioProxyConfig struct {
 	BaseURL            string
 }
 
+type composioContextKey string
+
+const composioConnectedAccountIDContextKey composioContextKey = "composio_connected_account_id"
+
+type ComposioAccountInfo struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	ToolkitSlug    string `json:"toolkit_slug,omitempty"`
+	AuthConfigID   string `json:"auth_config_id,omitempty"`
+	EmailAddress   string `json:"email_address,omitempty"`
+	Selected       bool   `json:"selected,omitempty"`
+	SelectionMatch string `json:"selection_match,omitempty"`
+}
+
+func WithComposioConnectedAccountID(ctx context.Context, connectedAccountID string) context.Context {
+	connectedAccountID = strings.TrimSpace(connectedAccountID)
+	if connectedAccountID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, composioConnectedAccountIDContextKey, connectedAccountID)
+}
+
 type composioProxyTransport struct {
 	baseTransport http.RoundTripper
 	cfg           composioProxyConfig
@@ -120,7 +142,7 @@ func ComposioProxyEnabled() bool {
 	return composioProxyEnabled()
 }
 
-func newComposioProxyConfig(serviceLabel string, email string) (composioProxyConfig, error) {
+func newComposioProxyConfig(ctx context.Context, serviceLabel string, email string) (composioProxyConfig, error) {
 	apiKey := strings.TrimSpace(os.Getenv("COMPOSIO_API_KEY"))
 	if apiKey == "" {
 		return composioProxyConfig{}, errors.New("COMPOSIO_API_KEY is required when GOG_COMPOSIO_PROXY is enabled")
@@ -135,13 +157,21 @@ func newComposioProxyConfig(serviceLabel string, email string) (composioProxyCon
 		os.Getenv("GOG_COMPOSIO_ENTITY_ID"),
 		os.Getenv("COMPOSIO_ENTITY_ID"),
 	)
+	serviceLabel = canonicalComposioServiceLabel(serviceLabel)
+
+	contextAccountID, _ := ctx.Value(composioConnectedAccountIDContextKey).(string)
 
 	return composioProxyConfig{
-		APIKey:       apiKey,
-		EntityID:     strings.TrimSpace(entityID),
-		Email:        strings.TrimSpace(email),
-		ServiceLabel: canonicalComposioServiceLabel(serviceLabel),
+		APIKey:   apiKey,
+		EntityID: strings.TrimSpace(entityID),
+		Email: strings.TrimSpace(firstNonEmpty(
+			serviceEnv("GOG_COMPOSIO_%s_ACCOUNT", serviceLabel),
+			serviceEnv("GOG_%s_ACCOUNT", serviceLabel),
+			email,
+		)),
+		ServiceLabel: serviceLabel,
 		ConnectedAccountID: strings.TrimSpace(firstNonEmpty(
+			contextAccountID,
 			serviceEnv("GOG_COMPOSIO_%s_CONNECTED_ACCOUNT_ID", serviceLabel),
 			serviceEnv("COMPOSIO_%s_CONNECTED_ACCOUNT_ID", serviceLabel),
 			os.Getenv("GOG_COMPOSIO_CONNECTED_ACCOUNT_ID"),
@@ -151,8 +181,8 @@ func newComposioProxyConfig(serviceLabel string, email string) (composioProxyCon
 	}, nil
 }
 
-func newComposioProxyHTTPClient(serviceLabel string, email string) (*http.Client, error) {
-	cfg, err := newComposioProxyConfig(serviceLabel, email)
+func newComposioProxyHTTPClient(ctx context.Context, serviceLabel string, email string) (*http.Client, error) {
+	cfg, err := newComposioProxyConfig(ctx, serviceLabel, email)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +190,48 @@ func newComposioProxyHTTPClient(serviceLabel string, email string) (*http.Client
 }
 
 func NewComposioProxyHTTPClient(serviceLabel string, email string) (*http.Client, error) {
-	return newComposioProxyHTTPClient(serviceLabel, email)
+	return newComposioProxyHTTPClient(context.Background(), serviceLabel, email)
+}
+
+func NewComposioProxyHTTPClientWithContext(ctx context.Context, serviceLabel string, email string) (*http.Client, error) {
+	return newComposioProxyHTTPClient(ctx, serviceLabel, email)
+}
+
+func ListComposioProxyAccounts(ctx context.Context, serviceLabel string, email string) ([]ComposioAccountInfo, error) {
+	cfg, err := newComposioProxyConfig(ctx, serviceLabel, email)
+	if err != nil {
+		return nil, err
+	}
+	transport := newComposioProxyTransport(nil, cfg)
+	accounts, err := transport.listConnectedAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	accounts = transport.filterAccountsForService(accounts)
+	out := make([]ComposioAccountInfo, 0, len(accounts))
+	for _, account := range accounts {
+		info := ComposioAccountInfo{
+			ID:           account.ID,
+			Status:       account.Status,
+			ToolkitSlug:  account.ToolkitSlug(),
+			AuthConfigID: account.AuthConfigID(),
+		}
+		if cfg.ServiceLabel == "gmail" {
+			if emailAddress, emailErr := transport.gmailProfileEmail(ctx, account.ID); emailErr == nil {
+				info.EmailAddress = emailAddress
+				if desired := transport.desiredEmail(); desired != "" && strings.EqualFold(emailAddress, desired) {
+					info.Selected = true
+					info.SelectionMatch = "email"
+				}
+			}
+		}
+		if cfg.ConnectedAccountID != "" && account.ID == cfg.ConnectedAccountID {
+			info.Selected = true
+			info.SelectionMatch = "connected_account_id"
+		}
+		out = append(out, info)
+	}
+	return out, nil
 }
 
 func newComposioProxyTransport(base http.RoundTripper, cfg composioProxyConfig) *composioProxyTransport {
@@ -269,19 +340,40 @@ func (t *composioProxyTransport) resolveConnectedAccount(ctx context.Context) (s
 		return "", newComposioConnectorNotConnectedError(t.cfg.ServiceLabel)
 	}
 
-	accountID := serviceAccounts[0].ID
-	if desiredEmail := t.desiredEmail(); desiredEmail != "" && len(serviceAccounts) > 1 {
+	if len(serviceAccounts) == 1 {
+		accountID := serviceAccounts[0].ID
+		composioAccountCacheMu.Lock()
+		composioAccountCache[cacheKey] = accountID
+		composioAccountCacheMu.Unlock()
+		return accountID, nil
+	}
+
+	if desiredEmail := t.desiredEmail(); desiredEmail != "" {
 		if matched, ok := t.findAccountForEmail(ctx, serviceAccounts, desiredEmail); ok {
-			accountID = matched
-		} else {
-			slog.Warn("no Composio Google account matched requested email; using first active service account", "service", t.cfg.ServiceLabel, "email", desiredEmail, "account", accountID)
+			composioAccountCacheMu.Lock()
+			composioAccountCache[cacheKey] = matched
+			composioAccountCacheMu.Unlock()
+			return matched, nil
 		}
 	}
 
-	composioAccountCacheMu.Lock()
-	composioAccountCache[cacheKey] = accountID
-	composioAccountCacheMu.Unlock()
-	return accountID, nil
+	return "", t.newAmbiguousAccountError(ctx, serviceAccounts)
+}
+
+func (t *composioProxyTransport) newAmbiguousAccountError(ctx context.Context, accounts []composioAccount) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "multiple %s Composio accounts are connected; choose one with --account <email> or --connected-account-id <id>", displayServiceName(t.cfg.ServiceLabel))
+	if t.cfg.ServiceLabel == "gmail" {
+		b.WriteString("\n\nConnected Gmail accounts:")
+		for _, account := range accounts {
+			email, err := t.gmailProfileEmail(ctx, account.ID)
+			if err != nil || strings.TrimSpace(email) == "" {
+				email = "(email unavailable)"
+			}
+			fmt.Fprintf(&b, "\n  %s\t%s", email, account.ID)
+		}
+	}
+	return errors.New(b.String())
 }
 
 func (t *composioProxyTransport) listConnectedAccounts(ctx context.Context) ([]composioAccount, error) {
@@ -729,6 +821,26 @@ func canonicalComposioServiceLabel(service string) string {
 	case "mail", "email", "google-gmail":
 		return "gmail"
 	default:
+		return service
+	}
+}
+
+func displayServiceName(service string) string {
+	switch canonicalComposioServiceLabel(service) {
+	case "gmail":
+		return "Gmail"
+	case "calendar":
+		return "Google Calendar"
+	case "drive":
+		return "Google Drive"
+	case "docs":
+		return "Google Docs"
+	case "sheets":
+		return "Google Sheets"
+	default:
+		if service == "" {
+			return "Google"
+		}
 		return service
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/steipete/gogcli/internal/authclient"
 	"github.com/steipete/gogcli/internal/config"
 	"github.com/steipete/gogcli/internal/errfmt"
+	"github.com/steipete/gogcli/internal/googleapi"
 	"github.com/steipete/gogcli/internal/googleauth"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/secrets"
@@ -28,18 +29,19 @@ const (
 )
 
 type RootFlags struct {
-	Color          string `help:"Color output: auto|always|never" default:"${color}"`
-	Account        string `help:"Account email for API commands (gmail/calendar/chat/classroom/drive/docs/slides/contacts/tasks/people/sheets/forms/appscript)" aliases:"acct" short:"a"`
-	Client         string `help:"OAuth client name (selects stored credentials + token bucket)" default:"${client}"`
-	EnableCommands string `help:"Comma-separated list of enabled top-level commands (restricts CLI)" default:"${enabled_commands}"`
-	JSON           bool   `help:"Output JSON to stdout (best for scripting)" default:"${json}" aliases:"machine" short:"j"`
-	Plain          bool   `help:"Output stable, parseable text to stdout (TSV; no colors)" default:"${plain}" aliases:"tsv" short:"p"`
-	ResultsOnly    bool   `name:"results-only" help:"In JSON mode, emit only the primary result (drops envelope fields like nextPageToken)"`
-	Select         string `name:"select" aliases:"pick,project" help:"In JSON mode, select comma-separated fields (best-effort; supports dot paths). Desire path: use --fields for most commands."`
-	DryRun         bool   `help:"Do not make changes; print intended actions and exit successfully" aliases:"noop,preview,dryrun" short:"n"`
-	Force          bool   `help:"Skip confirmations for destructive commands" aliases:"yes,assume-yes" short:"y"`
-	NoInput        bool   `help:"Never prompt; fail instead (useful for CI)" aliases:"non-interactive,noninteractive"`
-	Verbose        bool   `help:"Enable verbose logging" short:"v"`
+	Color              string `help:"Color output: auto|always|never" default:"${color}"`
+	Account            string `help:"Account email for API commands (gmail/calendar/chat/classroom/drive/docs/slides/contacts/tasks/people/sheets/forms/appscript)" aliases:"acct" short:"a"`
+	ConnectedAccountID string `name:"connected-account-id" help:"Composio connected account ID for proxy-backed commands"`
+	Client             string `help:"OAuth client name (selects stored credentials + token bucket)" default:"${client}"`
+	EnableCommands     string `help:"Comma-separated list of enabled top-level commands (restricts CLI)" default:"${enabled_commands}"`
+	JSON               bool   `help:"Output JSON to stdout (best for scripting)" default:"${json}" aliases:"machine" short:"j"`
+	Plain              bool   `help:"Output stable, parseable text to stdout (TSV; no colors)" default:"${plain}" aliases:"tsv" short:"p"`
+	ResultsOnly        bool   `name:"results-only" help:"In JSON mode, emit only the primary result (drops envelope fields like nextPageToken)"`
+	Select             string `name:"select" aliases:"pick,project" help:"In JSON mode, select comma-separated fields (best-effort; supports dot paths). Desire path: use --fields for most commands."`
+	DryRun             bool   `help:"Do not make changes; print intended actions and exit successfully" aliases:"noop,preview,dryrun" short:"n"`
+	Force              bool   `help:"Skip confirmations for destructive commands" aliases:"yes,assume-yes" short:"y"`
+	NoInput            bool   `help:"Never prompt; fail instead (useful for CI)" aliases:"non-interactive,noninteractive"`
+	Verbose            bool   `help:"Enable verbose logging" short:"v"`
 }
 
 type CLI struct {
@@ -147,6 +149,7 @@ func Execute(args []string) (err error) {
 		ResultsOnly: cli.ResultsOnly,
 		Select:      splitCommaList(cli.Select),
 	})
+	ctx = googleapi.WithComposioConnectedAccountID(ctx, cli.ConnectedAccountID)
 	ctx = authclient.WithClient(ctx, cli.Client)
 
 	uiColor := cli.Color

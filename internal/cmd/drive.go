@@ -605,7 +605,7 @@ func driveUploadMediaViaComposioProxy(ctx context.Context, account string, metho
 		return nil, seekErr
 	}
 
-	client, err := googleapi.NewComposioProxyHTTPClient("drive", account)
+	client, err := googleapi.NewComposioProxyHTTPClientWithContext(ctx, "drive", account)
 	if err != nil {
 		return nil, err
 	}
