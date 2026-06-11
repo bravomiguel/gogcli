@@ -35,7 +35,7 @@ func confirmDestructive(ctx context.Context, flags *RootFlags, action string) er
 		return fmt.Errorf("read confirmation: %w", readErr)
 	}
 	ans := strings.TrimSpace(strings.ToLower(line))
-	if ans == "y" || ans == "yes" {
+	if ans == "y" || ans == boolTrue {
 		return nil
 	}
 	return &ExitError{Code: 1, Err: errors.New("cancelled")}

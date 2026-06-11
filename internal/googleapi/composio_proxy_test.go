@@ -417,6 +417,89 @@ func TestComposioProxyTransport_SelectsAccountByServiceAuthConfig(t *testing.T) 
 	}
 }
 
+func TestComposioProxyTransport_SelectsExactDriveToolkitAmongGoogleAccounts(t *testing.T) {
+	origClient := composioHTTPClient
+	origCache := composioAccountCache
+	t.Cleanup(func() {
+		composioHTTPClient = origClient
+		composioAccountCache = origCache
+	})
+	composioAccountCache = map[string]string{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case composioAccountsPath:
+			_, _ = w.Write([]byte(`{"items":[` +
+				`{"id":"ca_docs","status":"ACTIVE","toolkit":{"slug":"googledocs"},"auth_config":{"id":"ac_docs"}},` +
+				`{"id":"ca_drive","status":"ACTIVE","toolkit":{"slug":"googledrive"},"auth_config":{"id":"ac_drive"}},` +
+				`{"id":"ca_sheets","status":"ACTIVE","toolkit":{"slug":"googlesheets"},"auth_config":{"id":"ac_sheets"}}` +
+				`]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:       "key",
+		EntityID:     "miguel@example.com",
+		Email:        "miguel@example.com",
+		ServiceLabel: "drive",
+		BaseURL:      srv.URL,
+	})
+	accountID, err := transport.connectedAccount(t.Context())
+	if err != nil {
+		t.Fatalf("connectedAccount: %v", err)
+	}
+	if accountID != "ca_drive" {
+		t.Fatalf("accountID = %q", accountID)
+	}
+}
+
+func TestComposioProxyTransport_ErrorsWhenMultipleDriveAccountsAreAmbiguous(t *testing.T) {
+	origClient := composioHTTPClient
+	origCache := composioAccountCache
+	t.Cleanup(func() {
+		composioHTTPClient = origClient
+		composioAccountCache = origCache
+	})
+	composioAccountCache = map[string]string{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case composioAccountsPath:
+			_, _ = w.Write([]byte(`{"items":[` +
+				`{"id":"ca_drive_one","status":"ACTIVE","toolkit":{"slug":"googledrive"},"auth_config":{"id":"ac_drive_one"}},` +
+				`{"id":"ca_drive_two","status":"ACTIVE","toolkit":{"slug":"googledrive"},"auth_config":{"id":"ac_drive_two"}}` +
+				`]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:       "key",
+		EntityID:     "miguel@example.com",
+		Email:        "miguel@example.com",
+		ServiceLabel: "drive",
+		BaseURL:      srv.URL,
+	})
+	_, err := transport.connectedAccount(t.Context())
+	if err == nil {
+		t.Fatalf("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "multiple Google Drive Composio accounts are connected") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "googledrive\tca_drive_one\tac_drive_one") ||
+		!strings.Contains(err.Error(), "googledrive\tca_drive_two\tac_drive_two") {
+		t.Fatalf("error did not include drive account choices: %q", err.Error())
+	}
+}
+
 func TestComposioProxyTransport_MissingServiceAccountErrorsClearly(t *testing.T) {
 	origClient := composioHTTPClient
 	origCache := composioAccountCache

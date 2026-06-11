@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.8-google-proxy - 2026-06-10
+
+### Fixed
+- Composio proxy: prefer the active Google Drive connector for Drive commands when Docs or Sheets connectors are also connected.
+- Composio proxy: only use Gmail profile email probing for Gmail account disambiguation.
+
 ## 0.11.6-google-proxy - 2026-06-01
 
 ### Fixed

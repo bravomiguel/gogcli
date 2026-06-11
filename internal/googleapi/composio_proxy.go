@@ -340,24 +340,52 @@ func (t *composioProxyTransport) resolveConnectedAccount(ctx context.Context) (s
 		return "", newComposioConnectorNotConnectedError(t.cfg.ServiceLabel)
 	}
 
-	if len(serviceAccounts) == 1 {
-		accountID := serviceAccounts[0].ID
-		composioAccountCacheMu.Lock()
-		composioAccountCache[cacheKey] = accountID
-		composioAccountCacheMu.Unlock()
+	if accountID, ok := t.preferredToolkitAccountForService(accounts); ok {
+		t.cacheResolvedAccount(cacheKey, accountID)
 		return accountID, nil
 	}
 
-	if desiredEmail := t.desiredEmail(); desiredEmail != "" {
+	if len(serviceAccounts) == 1 {
+		accountID := serviceAccounts[0].ID
+		t.cacheResolvedAccount(cacheKey, accountID)
+		return accountID, nil
+	}
+
+	if desiredEmail := t.desiredEmail(); t.cfg.ServiceLabel == "gmail" && desiredEmail != "" {
 		if matched, ok := t.findAccountForEmail(ctx, serviceAccounts, desiredEmail); ok {
-			composioAccountCacheMu.Lock()
-			composioAccountCache[cacheKey] = matched
-			composioAccountCacheMu.Unlock()
+			t.cacheResolvedAccount(cacheKey, matched)
 			return matched, nil
 		}
 	}
 
 	return "", t.newAmbiguousAccountError(ctx, serviceAccounts)
+}
+
+func (t *composioProxyTransport) cacheResolvedAccount(cacheKey string, accountID string) {
+	composioAccountCacheMu.Lock()
+	composioAccountCache[cacheKey] = accountID
+	composioAccountCacheMu.Unlock()
+}
+
+func (t *composioProxyTransport) preferredToolkitAccountForService(accounts []composioAccount) (string, bool) {
+	if t.cfg.ServiceLabel != "drive" {
+		return "", false
+	}
+
+	var matches []composioAccount
+	for _, account := range accounts {
+		if !strings.EqualFold(account.ToolkitSlug(), "googledrive") {
+			continue
+		}
+		if status := strings.TrimSpace(account.Status); status != "" && !strings.EqualFold(status, "ACTIVE") {
+			continue
+		}
+		matches = append(matches, account)
+	}
+	if len(matches) != 1 {
+		return "", false
+	}
+	return matches[0].ID, true
 }
 
 func (t *composioProxyTransport) newAmbiguousAccountError(ctx context.Context, accounts []composioAccount) error {
@@ -371,6 +399,11 @@ func (t *composioProxyTransport) newAmbiguousAccountError(ctx context.Context, a
 				email = "(email unavailable)"
 			}
 			fmt.Fprintf(&b, "\n  %s\t%s", email, account.ID)
+		}
+	} else {
+		fmt.Fprintf(&b, "\n\nConnected %s accounts:", displayServiceName(t.cfg.ServiceLabel))
+		for _, account := range accounts {
+			fmt.Fprintf(&b, "\n  %s\t%s\t%s", account.ToolkitSlug(), account.ID, account.AuthConfigID())
 		}
 	}
 	return errors.New(b.String())
