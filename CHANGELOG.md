@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.9-google-proxy - 2026-08-17
+
+### Added
+- Gmail: add `gmail messages get <message-id>` for efficient exact-message body reads.
+
+### Fixed
+- Composio proxy: preserve Mally provider-gateway error messages instead of reporting blank Google API errors.
+
 ## 0.11.8-google-proxy - 2026-06-10
 
 ### Fixed

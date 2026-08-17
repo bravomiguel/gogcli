@@ -175,3 +175,59 @@ func TestExecute_GmailMessagesSearch_JSON_IncludeBody(t *testing.T) {
 		t.Fatalf("expected decoded body, got: %q", out)
 	}
 }
+
+func TestExecute_GmailMessagesGet_JSON(t *testing.T) {
+	origNew := newGmailService
+	t.Cleanup(func() { newGmailService = origNew })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/users/me/messages/m1"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       "m1",
+				"threadId": "t1",
+				"labelIds": []string{"INBOX"},
+				"payload": map[string]any{
+					"mimeType": "text/plain",
+					"headers": []map[string]any{
+						{"name": "From", "value": "Inspector <inspection@example.com>"},
+						{"name": "Subject", "value": "Vehicle inspection"},
+						{"name": "Date", "value": "Mon, 17 Aug 2026 08:00:00 -0600"},
+					},
+					"body": map[string]any{"data": encodeBase64URL("Bring proof of insurance")},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/users/me/labels"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"labels": []map[string]any{{"id": "INBOX", "name": "INBOX", "type": "system"}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	svc, err := gmail.NewService(
+		context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(srv.Client()),
+		option.WithEndpoint(srv.URL+"/"),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	newGmailService = func(context.Context, string) (*gmail.Service, error) { return svc, nil }
+
+	out := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "messages", "get", "m1"}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+		})
+	})
+	if !strings.Contains(out, "Bring proof of insurance") || !strings.Contains(out, `"id": "m1"`) {
+		t.Fatalf("expected exact message body, got: %q", out)
+	}
+}

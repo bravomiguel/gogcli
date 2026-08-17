@@ -74,6 +74,19 @@ func TestFormat_GoogleAPIError(t *testing.T) {
 	}
 }
 
+func TestFormat_ProviderGatewayError(t *testing.T) {
+	err := &ggoogleapi.Error{
+		Code:    401,
+		Message: "Mally provider gateway: Invalid or out-of-scope credential",
+	}
+
+	got := Format(err)
+
+	if got != "Provider gateway error (401): Invalid or out-of-scope credential" {
+		t.Fatalf("unexpected: %q", got)
+	}
+}
+
 func TestFormat_KongParseError_UnknownFlag(t *testing.T) {
 	// Use real Kong parser to generate a parse error
 	type TestCmd struct {

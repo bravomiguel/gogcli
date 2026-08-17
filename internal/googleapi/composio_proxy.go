@@ -282,6 +282,7 @@ func (t *composioProxyTransport) RoundTrip(req *http.Request) (*http.Response, e
 	}
 
 	if proxyResp.StatusCode < 200 || proxyResp.StatusCode >= 300 {
+		raw = normalizeProviderGatewayError(proxyResp.StatusCode, raw)
 		return httpResponse(req, proxyResp.StatusCode, proxyResp.Header, raw), nil
 	}
 
@@ -305,6 +306,26 @@ func (t *composioProxyTransport) RoundTrip(req *http.Request) (*http.Response, e
 	}
 
 	return httpResponse(req, status, headers, body), nil
+}
+
+func normalizeProviderGatewayError(status int, raw []byte) []byte {
+	var gatewayError struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &gatewayError); err != nil || strings.TrimSpace(gatewayError.Error) == "" {
+		return raw
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    status,
+			"message": "Mally provider gateway: " + strings.TrimSpace(gatewayError.Error),
+		},
+	})
+	if err != nil {
+		return raw
+	}
+	return payload
 }
 
 func (t *composioProxyTransport) connectedAccount(ctx context.Context) (string, error) {

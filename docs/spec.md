@@ -264,6 +264,7 @@ Flag aliases:
 - `gog classroom profile [userId]`
 - `gog gmail search <query> [--max N] [--page TOKEN]`
 - `gog gmail messages search <query> [--max N] [--page TOKEN] [--include-body]`
+- `gog gmail messages get <message-id>`
 - `gog gmail thread get <threadId> [--download]`
 - `gog gmail thread modify <threadId> [--add ...] [--remove ...]`
 - `gog gmail get <messageId> [--format full|metadata|raw] [--headers ...]`

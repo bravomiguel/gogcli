@@ -16,6 +16,72 @@ import (
 
 type GmailMessagesCmd struct {
 	Search GmailMessagesSearchCmd `cmd:"" name:"search" aliases:"find,query,ls,list" group:"Read" help:"Search messages using Gmail query syntax"`
+	Get    GmailMessagesGetCmd    `cmd:"" name:"get" aliases:"read,show" group:"Read" help:"Read a message by Gmail message ID"`
+}
+
+type GmailMessagesGetCmd struct {
+	ID       string `arg:"" name:"id" help:"Gmail message ID"`
+	Timezone string `name:"timezone" short:"z" help:"Output timezone (IANA name, e.g. America/New_York, UTC). Default: local"`
+	Local    bool   `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
+}
+
+func (c *GmailMessagesGetCmd) Run(ctx context.Context, flags *RootFlags) error {
+	account, err := requireAccount(flags)
+	if err != nil {
+		return err
+	}
+	messageID := strings.TrimSpace(c.ID)
+	if messageID == "" {
+		return usage("missing message ID")
+	}
+
+	svc, err := newGmailService(ctx, account)
+	if err != nil {
+		return err
+	}
+	idToName, err := fetchLabelIDToName(svc)
+	if err != nil {
+		return err
+	}
+	loc, err := resolveOutputLocation(c.Timezone, c.Local)
+	if err != nil {
+		return err
+	}
+	items, err := fetchMessageDetails(
+		ctx,
+		svc,
+		[]*gmail.Message{{Id: messageID}},
+		idToName,
+		loc,
+		true,
+	)
+	if err != nil {
+		return err
+	}
+	if len(items) != 1 {
+		return fmt.Errorf("message %s was not returned", messageID)
+	}
+
+	if outfmt.IsJSON(ctx) {
+		return outfmt.WriteJSON(ctx, os.Stdout, items[0])
+	}
+
+	w, flush := tableWriter(ctx)
+	defer flush()
+	fmt.Fprintln(w, "ID\tTHREAD\tDATE\tFROM\tSUBJECT\tLABELS\tBODY")
+	it := items[0]
+	fmt.Fprintf(
+		w,
+		"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		it.ID,
+		it.ThreadID,
+		it.Date,
+		it.From,
+		it.Subject,
+		strings.Join(it.Labels, ","),
+		sanitizeMessageBody(it.Body),
+	)
+	return nil
 }
 
 type GmailMessagesSearchCmd struct {

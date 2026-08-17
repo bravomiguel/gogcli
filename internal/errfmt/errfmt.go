@@ -60,6 +60,9 @@ func Format(err error) string {
 
 	var gerr *ggoogleapi.Error
 	if errors.As(err, &gerr) {
+		if message, ok := strings.CutPrefix(gerr.Message, "Mally provider gateway: "); ok {
+			return fmt.Sprintf("Provider gateway error (%d): %s", gerr.Code, message)
+		}
 		reason := ""
 		if len(gerr.Errors) > 0 && gerr.Errors[0].Reason != "" {
 			reason = gerr.Errors[0].Reason

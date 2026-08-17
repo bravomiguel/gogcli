@@ -318,6 +318,45 @@ func TestComposioProxyTransport_SelectsContextConnectedAccountID(t *testing.T) {
 	}
 }
 
+func TestComposioProxyTransport_NormalizesMallyGatewayError(t *testing.T) {
+	origClient := composioHTTPClient
+	t.Cleanup(func() { composioHTTPClient = origClient })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != composioProxyPath {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Invalid or out-of-scope credential"}`))
+	}))
+	defer srv.Close()
+	composioHTTPClient = srv.Client()
+
+	transport := newComposioProxyTransport(nil, composioProxyConfig{
+		APIKey:             "relay-token",
+		ServiceLabel:       "gmail",
+		ConnectedAccountID: "ca_1",
+		BaseURL:            srv.URL,
+	})
+	req, err := http.NewRequest(http.MethodGet, "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !strings.Contains(string(raw), `"message":"Mally provider gateway: Invalid or out-of-scope credential"`) {
+		t.Fatalf("unexpected normalized error: %s", raw)
+	}
+}
+
 func TestListComposioProxyAccountsIncludesGmailProfiles(t *testing.T) {
 	origClient := composioHTTPClient
 	origCache := composioAccountCache

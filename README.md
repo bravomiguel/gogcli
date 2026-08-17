@@ -1222,6 +1222,12 @@ ID                  THREAD             SUBJECT                           FROM   
 16d1c2b3a4e5f6d7    7f6e5d4c3b2a1908    Project update                    bob@example.com       2025-01-08
 ```
 
+Read a known Gmail message ID directly with its full decoded body:
+
+```bash
+$ gog gmail messages get 18f1a2b3c4d5e6f7 --json
+```
+
 ### JSON
 
 Machine-readable output for scripting and automation:
